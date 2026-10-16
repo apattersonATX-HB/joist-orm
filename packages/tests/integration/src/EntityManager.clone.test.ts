@@ -531,6 +531,51 @@ describe("EntityManager.clone", () => {
       { entity: clonedReview, field: "book", value: clonedBook },
     ]);
   });
+
+  // Cloning only children copies their parent reference, so each clone starts on the source parent until postClone
+  // moves it, which queues reactions on the source parent; `skip` the parent field to avoid that.
+  it("recalculates the source author's book count when cloning only its books into another author", async () => {
+    // Given two authors, and only the first has a book
+    const em = newEntityManager();
+    const [a1, a2] = [newAuthor(em, { books: [{}] }), newAuthor(em)];
+    await em.flush();
+    const calculations = a1.transientFields.numberOfBooksCalcInvoked;
+    // When we clone just the books (not their author) and move the copies to the second author
+    await em.clone(a1.books.get, { postClone: (_, clone) => (clone as Book).author.set(a2) });
+    await em.flush();
+    // Then the source author's book count is recalculated, because the clone briefly belonged to it
+    expect(a1.transientFields.numberOfBooksCalcInvoked).toBe(calculations + 1);
+  });
+
+  it("does not recalculate the source author's book count when cloning only its books with author skipped", async () => {
+    // Given two authors, and only the first has a book
+    const em = newEntityManager();
+    const [a1, a2] = [newAuthor(em, { books: [{}] }), newAuthor(em)];
+    await em.flush();
+    const calculations = a1.transientFields.numberOfBooksCalcInvoked;
+    // When we clone just the books without copying their author, and set the second author in postClone
+    await em.clone(a1.books.get, { skip: "author", postClone: (_, clone) => (clone as Book).author.set(a2) });
+    await em.flush();
+    // Then the source author's book count isn't recalculated
+    expect(a1.transientFields.numberOfBooksCalcInvoked).toBe(calculations);
+  });
+
+  it("exposes the source parent to field hooks when cloning only children into another parent", async () => {
+    // Given two authors, and only the first has a book
+    const em = newEntityManager();
+    const [a1, a2] = [newAuthor(em, { books: [{}] }), newAuthor(em)];
+    await em.flush();
+    // And a plugin observes every book-author assignment during cloning
+    const plugin = new CloneParentAssignmentsPlugin();
+    em.addPlugin(plugin);
+    // When we clone just the books and move the copies to the second author
+    const [clonedBook] = await em.clone(a1.books.get, { postClone: (_, clone) => (clone as Book).author.set(a2) });
+    // Then field hooks see the clone assigned to the source author before the second author
+    expect(plugin.assignments).toMatchEntity([
+      { entity: clonedBook, field: "author", value: a1.id },
+      { entity: clonedBook, field: "author", value: a2.id },
+    ]);
+  });
 });
 
 async function numberOf(em: EntityManager, ...args: MaybeAbstractEntityConstructor<any>[]): Promise<number[]> {
